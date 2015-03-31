@@ -9,43 +9,98 @@
 #include <unistd.h>
 #include <linux/limits.h>
 
-char *get_command_path(char *command_name, char *dst)
+extern char** environ;
+
+/*char *get_command_path(char *command_name, char *dst)
 {
     char *env_path = getenv("PATH");
+    printf("%s\n", env_path);
     char *current = strtok(env_path, ":");
 
     while (current != NULL)
     {
-        current = strtok(NULL, ":");
-
-        struct stat info;
         char full_path[PATH_MAX + 1];
         sprintf(full_path, "%s/%s", current, command_name);
 
-        if (lstat(full_path, &info) == 0)
+        if (access(full_path, F_OK) == 0)
         {
             strcpy(dst, full_path);
             return dst;
         }
+
+        current = strtok(NULL, ":");
     }
 
     strcpy(dst, "");
     return dst;
+}*/
+
+void process_url(char *url, char *curl_path, int write_pipe)
+{
+    dup2(write_pipe, 1);
+
+    if (fork() == 0)
+    {
+        printf("CHILD - %s\n", url);
+        char *new_argv[] = {"curl", url, NULL};
+        if (execvpe("curl", new_argv, environ) == -1)
+        {
+            close(write_pipe);
+            _exit(EXIT_SUCCESS);
+        }
+    }
+    else
+    {
+        wait(NULL);
+        printf("END OF PAGE\n");
+        close(write_pipe);
+        _exit(EXIT_SUCCESS);
+    }
 }
 
-void process_url(char *url, char *curl_path)
+void parent_write_pipe(int result_pipe[2])
 {
-    printf("CHILD - %s - %s\n", url, curl_path);
-    if (execl(curl_path, curl_path, url, NULL) == -1)
-        perror("cant exec\n");
+    FILE *out_file = fopen("out.txt", "w");
+    if (out_file == NULL)
+        perror("file");
+    printf("Try to read\n");
+    //char ch;
+    char last[8];
+    char ch;
+    last[7] = '\0';
+    while (1)
+    {
+        int code = read(result_pipe[0], &ch, 1);
+
+        if (code != 1)
+            break;
+
+        //if (ch != '\n' && ch != '\t')
+       // {
+            fprintf(out_file, "%c", ch);
+       // }
+
+        for (int i = 0; i < 6; ++i)
+            last[i] = last[i + 1];
+
+        last[6] = ch;
+
+        if (strcmp(last, "</html>") == 0)
+        {
+            fprintf(out_file, "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
+        }
+        //printf("last = %s\n", last);
+    }
+
+    printf("\nEnd of message.\n");
+    fclose(out_file);
 }
 
 int main(void)
 {
     char curl_path[PATH_MAX + 1];
-    char *name = get_command_path("curl", curl_path);
-    printf("curl == %s\n", name);
-    //process_url("ya.ru", curl_path);
+    //printf("curl == %s\n", name);
+
     char *fifo_name = getenv("URLS_SRC");
 
     if (mkfifo(fifo_name, O_RDWR) != 0 )
@@ -64,13 +119,18 @@ int main(void)
         return 1;
     }
 
-    //write(fifo, "Hello\n", sizeof("Hello\n"));
-    char* MyResult = (char*) malloc(255);
+    char* current_url = (char*) malloc(255);
     char ch;
     ssize_t read_code = 0;
     size_t index = 0;
+
     int children_num = 0;
-//process_url("ya.ru", curl_path);
+
+    int result_pipe[2];
+    pipe(result_pipe);
+    //char *new_argv[] = {"curl", "ya.ru"};
+    //execvpe("curl", new_argv, environ);
+
     while (1)
     {
         read_code = read(fifo, &ch, 1);
@@ -88,41 +148,45 @@ int main(void)
 
         if (ch == '\n')
         {
-            //process_url("ya.ru", curl_path);
-
             pid_t child = fork();
+
+            if (child == -1)
+            {
+                fprintf(stderr, "Can't fork.");
+                return 1;
+            }
 
             if (child == 0)
             {
-                char* line = malloc(strlen(MyResult));
-                strcpy(line, MyResult);
-                process_url(line, curl_path);
-                free(line);
-                return 0;
-            }
+                char* line = malloc(strlen(current_url));
+                strcpy(line, current_url);
+                printf("new child - %s\n", line);
 
+                close(result_pipe[0]);
+
+                process_url(line, curl_path, result_pipe[1]);
+            }
+            parent_write_pipe(result_pipe);
+            wait(NULL);
             children_num++;
+            //printf("%d\n", children_num);
             index = 0;
-            MyResult[index] = '\0';
+            current_url[index] = '\0';
         }
         else
         {
-            //printf("%c", ch);
-            MyResult[index++] = ch;
-            MyResult[index] = '\0';
+            current_url[index++] = ch;
+            current_url[index] = '\0';
         }
     }
-
     close(fifo);
 
-    for (int i = 0; i < children_num; ++i)
-        wait(NULL);
+    close(result_pipe[1]);
 
-    /*fifo = open(fifo_name, O_RDONLY);
-    char* MyResult = (char*) malloc(255);
-    read(fifo, MyResult, sizeof(MyResult));
+    //чтение на закончится пока все дети не завершарт работу
+    /*for (int i = 0; i < children_num; ++i)
+        wait(NULL);*/
 
-    close(fifo);*/
     return 0;
 }
 
