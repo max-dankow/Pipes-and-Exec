@@ -48,6 +48,7 @@ void process_url(char *url, int pipe_write)
         _exit(EXIT_FAILURE);
     }
 
+    //добавляем метку начала страницы, то есть разделитель
     char zero_code = (char) 0;
     write(curl_pipe[1], &zero_code, 1);
 
@@ -88,7 +89,7 @@ void process_url(char *url, int pipe_write)
     }
 }
 
-void parent_write_pipe(int result_pipe[2])
+void parent_write_pipe(int result_pipe)
 {
     FILE *out_file = fopen("out.txt", "w");
 
@@ -97,24 +98,25 @@ void parent_write_pipe(int result_pipe[2])
         perror("Can't open output file.");
     }
 
-    printf("Try to read\n");
+    printf("Reading from result_pipe\n");
+
+    //будем помнить последние 8 символов из потока, приведенных к нижнему регистру
     char last[9];
     memset(last, 0, 9);
-    char ch;
     int href_mode = 0;
 
     while (1)
     {
-        int code = read(result_pipe[0], &ch, 1);
+        char ch;
+        int code = read(result_pipe, &ch, 1);
 
         if (code != 1)
             break;
 
-        if (href_mode == 1 && ch == 34)
+        if (href_mode == 1 && ch == '"')
         {
             href_mode = 0;
             printf("\n");
-            //printf("HREF END - %c!\n", ch);
         }
 
         if (href_mode == 1)
@@ -130,29 +132,20 @@ void parent_write_pipe(int result_pipe[2])
         for (int i = 0; i < 7; ++i)
             last[i] = last[i + 1];
 
-        //printf("* char is '%d' *", (unsigned) ch);
         if (ch != (char) 0)
         {
             last[7] = tolower(ch);
         }
         else
         {
-            fprintf(out_file, "\n\nNEXT SITE\n\n");
+            fprintf(out_file, "\n\n*** NEXT SITE ***\n\n");
         }
 
         if (strcmp(last, "<a href=") == 0)
         {
             href_mode = 1;
-            read(result_pipe[0], &ch, 1);
-            //printf("HREF DETECTED!\n");
+            read(result_pipe, &ch, 1);
         }
-
-        /*if (strcmp(((char*) last) + 1, "</html>") == 0)
-        {
-            fprintf(out_file, "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
-        }*/
-
-        //fprintf(out_file, "last = %s\n", last + 1);
     }
 
     printf("\nEnd of message.\n");
@@ -218,7 +211,6 @@ int main(void)
             {
                 char* line = malloc(strlen(current_url));
                 strcpy(line, current_url);
-                printf("new child - %s\n", line);
                 close(result_pipe[0]);
                 process_url(line, result_pipe[1]);
             }
@@ -237,11 +229,7 @@ int main(void)
     close(fifo);
     close(result_pipe[1]);
 
-    parent_write_pipe(result_pipe);
-
-    //чтение на закончится пока все дети не завершарт работу
-    /*for (int i = 0; i < children_num; ++i)
-        wait(NULL);*/
+    parent_write_pipe(result_pipe[0]);
 
     return 0;
 }
