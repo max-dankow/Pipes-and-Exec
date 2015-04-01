@@ -10,50 +10,80 @@
 #include <linux/limits.h>
 
 extern char** environ;
+static const size_t MAX_PAGE_SIZE = 1 << 20;
 
-/*char *get_command_path(char *command_name, char *dst)
+size_t extract_pipe(int pipe, char* buffer)
 {
-    char *env_path = getenv("PATH");
-    printf("%s\n", env_path);
-    char *current = strtok(env_path, ":");
+    char* buffer_start = buffer;
 
-    while (current != NULL)
+    while (1)
     {
-        char full_path[PATH_MAX + 1];
-        sprintf(full_path, "%s/%s", current, command_name);
+        char ch;
+        int code = read(pipe, &ch, 1);
+        if (code != 1)
+            break;
 
-        if (access(full_path, F_OK) == 0)
-        {
-            strcpy(dst, full_path);
-            return dst;
-        }
-
-        current = strtok(NULL, ":");
+        *buffer = ch;
+        buffer++;
     }
 
-    strcpy(dst, "");
-    return dst;
-}*/
+    return buffer - buffer_start;
+}
 
-void process_url(char *url, char *curl_path, int write_pipe)
+void process_url(char *url, int pipe_write)
 {
-    dup2(write_pipe, 1);
+    //канал для получения цельной страницы от curl
+    int curl_pipe[2];
 
-    if (fork() == 0)
+    if (pipe(curl_pipe) == -1)
     {
-        printf("CHILD - %s\n", url);
-        char *new_argv[] = {"curl", url, NULL};
+        perror("pipe");
+        _exit(EXIT_FAILURE);
+    }
+
+    //перенаправляем вывод curl в канал curl_pipe
+    if (dup2(curl_pipe[1], 1) == -1)
+    {
+        perror("dup2 error.");
+        _exit(EXIT_FAILURE);
+    }
+
+    char zero_code = (char) 0;
+    write(curl_pipe[1], &zero_code, 1);
+
+    pid_t exec_child = fork();
+
+    if (exec_child == -1)
+    {
+        perror("Can't fork for exec\n");
+        _exit(EXIT_FAILURE);
+    }
+
+    if (exec_child == 0)
+    {
+        close(curl_pipe[0]);
+
+        //вызываем curl для адреса из строки url
+        char *new_argv[] = {"curl" , "-s", url, NULL};
         if (execvpe("curl", new_argv, environ) == -1)
         {
-            close(write_pipe);
-            _exit(EXIT_SUCCESS);
+            perror("Can't run curl.");
+            _exit(EXIT_FAILURE);
         }
     }
     else
     {
-        wait(NULL);
-        printf("END OF PAGE\n");
-        close(write_pipe);
+        close(curl_pipe[1]);
+        close(1);
+
+        //получаем цельную страницу - строку
+        char page[MAX_PAGE_SIZE];
+        size_t page_size = extract_pipe(curl_pipe[0], page);
+        page[page_size] = '\0';
+
+        write(pipe_write, page, page_size);
+
+        close(pipe_write);
         _exit(EXIT_SUCCESS);
     }
 }
@@ -61,13 +91,18 @@ void process_url(char *url, char *curl_path, int write_pipe)
 void parent_write_pipe(int result_pipe[2])
 {
     FILE *out_file = fopen("out.txt", "w");
+
     if (out_file == NULL)
-        perror("file");
+    {
+        perror("Can't open output file.");
+    }
+
     printf("Try to read\n");
-    //char ch;
-    char last[8];
+    char last[9];
+    memset(last, 0, 9);
     char ch;
-    last[7] = '\0';
+    int href_mode = 0;
+
     while (1)
     {
         int code = read(result_pipe[0], &ch, 1);
@@ -75,21 +110,49 @@ void parent_write_pipe(int result_pipe[2])
         if (code != 1)
             break;
 
-        //if (ch != '\n' && ch != '\t')
-       // {
-            fprintf(out_file, "%c", ch);
-       // }
+        if (href_mode == 1 && ch == 34)
+        {
+            href_mode = 0;
+            printf("\n");
+            //printf("HREF END - %c!\n", ch);
+        }
 
-        for (int i = 0; i < 6; ++i)
+        if (href_mode == 1)
+        {
+            printf("%c", ch);
+        }
+
+        if (ch != '\n' && ch != '\t' && ch != '\0')
+        {
+            fprintf(out_file, "%c", ch);
+        }
+
+        for (int i = 0; i < 7; ++i)
             last[i] = last[i + 1];
 
-        last[6] = ch;
+        //printf("* char is '%d' *", (unsigned) ch);
+        if (ch != (char) 0)
+        {
+            last[7] = tolower(ch);
+        }
+        else
+        {
+            fprintf(out_file, "\n\nNEXT SITE\n\n");
+        }
 
-        if (strcmp(last, "</html>") == 0)
+        if (strcmp(last, "<a href=") == 0)
+        {
+            href_mode = 1;
+            read(result_pipe[0], &ch, 1);
+            //printf("HREF DETECTED!\n");
+        }
+
+        /*if (strcmp(((char*) last) + 1, "</html>") == 0)
         {
             fprintf(out_file, "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
-        }
-        //printf("last = %s\n", last);
+        }*/
+
+        //fprintf(out_file, "last = %s\n", last + 1);
     }
 
     printf("\nEnd of message.\n");
@@ -98,9 +161,6 @@ void parent_write_pipe(int result_pipe[2])
 
 int main(void)
 {
-    char curl_path[PATH_MAX + 1];
-    //printf("curl == %s\n", name);
-
     char *fifo_name = getenv("URLS_SRC");
 
     if (mkfifo(fifo_name, O_RDWR) != 0 )
@@ -128,8 +188,6 @@ int main(void)
 
     int result_pipe[2];
     pipe(result_pipe);
-    //char *new_argv[] = {"curl", "ya.ru"};
-    //execvpe("curl", new_argv, environ);
 
     while (1)
     {
@@ -161,15 +219,11 @@ int main(void)
                 char* line = malloc(strlen(current_url));
                 strcpy(line, current_url);
                 printf("new child - %s\n", line);
-
                 close(result_pipe[0]);
-
-                process_url(line, curl_path, result_pipe[1]);
+                process_url(line, result_pipe[1]);
             }
-            parent_write_pipe(result_pipe);
-            wait(NULL);
+
             children_num++;
-            //printf("%d\n", children_num);
             index = 0;
             current_url[index] = '\0';
         }
@@ -179,9 +233,11 @@ int main(void)
             current_url[index] = '\0';
         }
     }
-    close(fifo);
 
+    close(fifo);
     close(result_pipe[1]);
+
+    parent_write_pipe(result_pipe);
 
     //чтение на закончится пока все дети не завершарт работу
     /*for (int i = 0; i < children_num; ++i)
