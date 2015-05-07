@@ -12,22 +12,17 @@
 extern char** environ;
 static const size_t MAX_PAGE_SIZE = 1 << 20;
 
-size_t extract_pipe(int pipe, char* buffer)
+size_t extract_pipe(int pipe, char** buffer)
 {
+    fprintf(stderr, "extracting pipe start\n");
     char* buffer_start = buffer;
-
-    while (1)
-    {
-        char ch;
-        int code = read(pipe, &ch, 1);
-        if (code != 1)
-            break;
-
-        *buffer = ch;
-        buffer++;
-    }
-
-    return buffer - buffer_start;
+    FILE* pipe_stream = fdopen(pipe, "r");
+    int len;
+    fread(*buffer, 1, 1, pipe_stream);
+    int readed = getdelim(buffer, &len, 0, pipe_stream);
+    fprintf(stderr, "extracting pipe(%d) END!\n%s\n", readed, *buffer);
+    fclose(pipe_stream);
+    return readed;
 }
 
 void process_url(char *url, int pipe_write)
@@ -78,12 +73,14 @@ void process_url(char *url, int pipe_write)
         close(1);
 
         //получаем цельную страницу - строку
-        char page[MAX_PAGE_SIZE];
-        size_t page_size = extract_pipe(curl_pipe[0], page);
+        char* page = (char*) malloc(MAX_PAGE_SIZE);
+        size_t page_size = extract_pipe(curl_pipe[0], &page);
         page[page_size] = '\0';
-
+        fprintf(stderr, "Writing to pipeout\n");
         write(pipe_write, page, page_size);
-
+        fprintf(stderr, "Writing end\n");
+        free(url);
+        free(page);
         close(pipe_write);
         _exit(EXIT_SUCCESS);
     }
@@ -91,7 +88,8 @@ void process_url(char *url, int pipe_write)
 
 void parent_write_pipe(int result_pipe)
 {
-    FILE *out_file = fopen("out.txt", "w");
+    FILE* out_file = fopen("out.txt", "w");
+    FILE* input_stream = fdopen(result_pipe, "r");
 
     if (out_file == NULL)
     {
@@ -107,10 +105,10 @@ void parent_write_pipe(int result_pipe)
 
     while (1)
     {
-        char ch;
+        char ch = (char) fgetc(input_stream);
         int code = read(result_pipe, &ch, 1);
 
-        if (code != 1)
+        if (code == EOF)
             break;
 
         if (href_mode == 1 && ch == '"')
@@ -230,6 +228,7 @@ int main(void)
     close(result_pipe[1]);
 
     parent_write_pipe(result_pipe[0]);
+    free(current_url);
 
     return 0;
 }
