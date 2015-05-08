@@ -62,6 +62,7 @@ void parent_write_pipe(int result_pipe)
 
 int main(void)
 {
+  //получаем название fifo из переменной окружения  
     char *fifo_name = getenv("URLS_SRC");
     if (mkfifo(fifo_name, O_RDWR) != 0 )
     {
@@ -71,7 +72,7 @@ int main(void)
             return EXIT_FAILURE;
         }
     }
-
+  //открываем fifo
     printf("Waiting for url's from FIFO\n");
     FILE* fifo = fopen(fifo_name, "r");
     if (fifo == NULL)
@@ -82,7 +83,7 @@ int main(void)
 
     int result_pipe[2];
     pipe(result_pipe);
-
+  //порождаем процесс, который будет обрабатывать результаты из пайпа
     pid_t read_child = fork();
     if (read_child == -1)
     {
@@ -100,9 +101,11 @@ int main(void)
     {
         int len;
         char* url = NULL;
+      //читаем очередной URL  
         int readed = getline(&url, &len, fifo);
         if (readed <= 0)
         {
+            free(url);
             break;
         }
         if (url[readed - 1] == '\n')
@@ -111,6 +114,10 @@ int main(void)
         }
         printf("url: %s\n", url);
 
+        char line[strlen(url) + 1];
+        strcpy(line, url);
+        free(url);
+      //порождаем процесс для exec  
         pid_t child = fork();
         if (child == -1)
         {
@@ -119,8 +126,6 @@ int main(void)
         }
         if (child == 0)
         {
-            char line[strlen(url) + 1];
-            strcpy(line, url);
             printf("%s\n", line);
             close(result_pipe[0]);
 
@@ -139,7 +144,6 @@ int main(void)
             }
         }
         wait(NULL);
-        free(url);
     }
 
     fclose(fifo);
